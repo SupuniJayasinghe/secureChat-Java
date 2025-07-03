@@ -5,9 +5,7 @@ import java.security.*;
 import javax.crypto.*;
 import javax.crypto.spec.*;
 import java.util.*;
-import java.util.Base64;
 import java.security.spec.X509EncodedKeySpec;
-
 
 public class Client {
     public static void main(String[] args) throws Exception {
@@ -16,15 +14,33 @@ public class Client {
         BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
         PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
 
-        // Provide username and password for login
-        String username = "userA";
-        String password = "pass123";
+        Scanner scanner = new Scanner(System.in);
 
+        System.out.print("Do you want to [1] Register or [2] Login? Enter 1 or 2: ");
+        String option = scanner.nextLine().trim();
+
+        String username, password;
+
+        System.out.print("Enter username: ");
+        username = scanner.nextLine();
+        System.out.print("Enter password: ");
+        password = scanner.nextLine();
+
+        if (option.equals("1")) {
+            if (utils.Auth.registerUser(username, password)) {
+                System.out.println("Registration successful. You can now login.");
+            } else {
+                System.out.println("sername already exists. Try logging in.");
+                return;
+            }
+        }
+
+        // Send credentials to server for authentication
         out.println(username);
         out.println(password);
 
         // Check authentication result
-        if (!in.readLine().equals("AUTH_SUCCESS")) {
+        if (!in.readLine().equals("AUTH_SUsCCESS")) {
             System.out.println("Authentication failed.");
             return;
         }
