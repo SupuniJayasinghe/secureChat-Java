@@ -5,15 +5,17 @@ import java.security.*;
 import java.util.Base64;
 import javax.crypto.*;
 import javax.crypto.spec.*;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.Scanner;
 
 public class Server {
     public static void main(String[] args) throws Exception {
-        // Register a test user for authentication
-        Auth.registerUser("userA", "pass123");
+        Auth.registerUser("userA", "pass123"); // optional default user
+
         ServerSocket serverSocket = new ServerSocket(5000);
         System.out.println("[SERVER] Listening on port 5000...");
 
-        // Accept connections and handle each client in a new thread
         while (true) {
             Socket clientSocket = serverSocket.accept();
             new Thread(new ClientHandler(clientSocket)).start();
@@ -21,7 +23,6 @@ public class Server {
     }
 }
 
-// Handles communication with a connected client
 class ClientHandler implements Runnable {
     private Socket socket;
 
@@ -30,11 +31,28 @@ class ClientHandler implements Runnable {
     }
 
     public void run() {
-        try {
-            BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-            PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+        try (
+                BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+                Scanner consoleScanner = new Scanner(System.in);) {
+            String action = in.readLine();
 
-            // Receive and verify username/password
+            if ("REGISTER".equalsIgnoreCase(action)) {
+                String username = in.readLine();
+                String password = in.readLine();
+
+                boolean registered = Auth.registerUser(username, password);
+                out.println(registered ? "REGISTER_SUCCESS" : "REGISTER_FAIL");
+                socket.close();
+                return;
+            }
+
+            if (!"LOGIN".equalsIgnoreCase(action)) {
+                out.println("UNKNOWN_COMMAND");
+                socket.close();
+                return;
+            }
+
             String username = in.readLine();
             String password = in.readLine();
 
@@ -45,31 +63,94 @@ class ClientHandler implements Runnable {
             }
             out.println("AUTH_SUCCESS");
 
-            // Generate RSA key pair and send public key
             KeyPair rsaKeys = Crypto.generateRSAKeyPair();
             PrivateKey privateKey = rsaKeys.getPrivate();
             PublicKey publicKey = rsaKeys.getPublic();
+
             out.println(Base64.getEncoder().encodeToString(publicKey.getEncoded()));
 
-            // Receive encrypted AES key, IV and encrypted message
             String encryptedAESKey = in.readLine();
-            String ivStr = in.readLine();
-            String encryptedMessage = in.readLine();
-
-            // Decrypt AES key and message
             byte[] aesKeyBytes = Crypto.decryptRSA(encryptedAESKey, privateKey);
             SecretKey aesKey = new SecretKeySpec(aesKeyBytes, "AES");
-            IvParameterSpec iv = new IvParameterSpec(Base64.getDecoder().decode(ivStr));
-            String decrypted = Crypto.decryptAES(encryptedMessage, aesKey, iv);
 
-            // Display results
-            System.out.println("--- New Message ---");
-            System.out.println("Encrypted Message: " + encryptedMessage);
-            System.out.println("Decrypted Message: " + decrypted);
-            System.out.println("Timestamp: " + java.time.LocalDateTime.now());
+            System.out.println("[SERVER] Secure chat started with user: " + username);
+
+            // Formatter for timestamps
+            DateTimeFormatter dtf = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+
+            // Thread to read incoming messages from client
+            Thread readThread = new Thread(() -> {
+                try {
+                    while (!socket.isClosed()) {
+                        String ivStr = in.readLine();
+                        if (ivStr == null)
+                            break;
+
+                        String encryptedMsg = in.readLine();
+                        if (encryptedMsg == null)
+                            break;
+
+                        System.out.println("\n--- Encrypted Message Received ---");
+                        System.out.println(encryptedMsg);
+
+                        IvParameterSpec iv = new IvParameterSpec(Base64.getDecoder().decode(ivStr));
+                        String decryptedMsg = Crypto.decryptAES(encryptedMsg, aesKey, iv);
+
+                        System.out.println(
+                                "[" + dtf.format(LocalDateTime.now()) + "] [Client Decrypted]: " + decryptedMsg);
+                        System.out.println("-------------------------------\n");
+
+                        if ("bye".equalsIgnoreCase(decryptedMsg.trim())) {
+                            System.out.println("[SERVER] Client ended the chat.");
+                            socket.close();
+                            break;
+                        }
+                    }
+
+                } catch (Exception e) {
+                    if (!socket.isClosed())
+                        System.out.println("[SERVER] Read thread error: " + e.getMessage());
+                }
+            });
+
+            // Thread to send messages to client
+            Thread writeThread = new Thread(() -> {
+                try {
+                    while (!socket.isClosed()) {
+                        System.out.print("[Server] Enter message: ");
+                        String msgToSend = consoleScanner.nextLine();
+
+                        IvParameterSpec iv = Crypto.generateIV();
+                        String ivStr = Base64.getEncoder().encodeToString(iv.getIV());
+                        String encryptedMsg = Crypto.encryptAES(msgToSend, aesKey, iv);
+
+                        out.println(ivStr);
+                        out.println(encryptedMsg);
+
+                        System.out.println("[" + dtf.format(LocalDateTime.now()) + "] [Server sent encrypted message]");
+
+                        if ("bye".equalsIgnoreCase(msgToSend.trim())) {
+                            System.out.println("[SERVER] You ended the chat.");
+                            socket.close();
+                            break;
+                        }
+                    }
+                } catch (Exception e) {
+                    if (!socket.isClosed())
+                        System.out.println("[SERVER] Write thread error: " + e.getMessage());
+                }
+            });
+
+            readThread.start();
+            writeThread.start();
+
+            readThread.join();
+            writeThread.join();
+
+            System.out.println("[SERVER] Connection closed.");
 
         } catch (Exception e) {
-            System.out.println("Error: " + e.getMessage());
+            System.out.println("[SERVER] Error: " + e.getMessage());
         }
     }
 }
